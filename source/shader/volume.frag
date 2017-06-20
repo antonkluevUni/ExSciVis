@@ -40,19 +40,32 @@ float get_sample_data(vec3 in_sampling_pos) {
 	return texture(volume_texture, in_sampling_pos * obj_to_tex).r;
 }
 
+vec3 get_gradient (vec3 sampling_pos) {
+	// Dx = (f(x + 1, y, z) - f(x - 1, y, z))/2;
+	vec3 a = max_bounds / volume_dimensions;
+	return vec3(
+		(get_sample_data(sampling_pos + vec3( a.r,   0,   0)) -	  // left
+		 get_sample_data(sampling_pos + vec3(-a.r,   0,   0)))/2, // right
+		(get_sample_data(sampling_pos + vec3(   0, a.g,   0)) -   // top
+		 get_sample_data(sampling_pos + vec3(   0,-a.g,   0)))/2, // bottom
+		(get_sample_data(sampling_pos + vec3(   0,   0, a.b)) -   // front
+		 get_sample_data(sampling_pos + vec3(   0,   0,-a.b)))/2  // bottom
+	);
+}
+
 void main() {
 	/// One step trough the volume
 	vec3 ray_increment = normalize(ray_entry_position - camera_location) * sampling_distance;
 	/// Position in Volume
 	vec3 sampling_pos = ray_entry_position + ray_increment; // test, increment just to be sure we are in the volume
 	/// Init color of fragment
-	vec4 dst = vec4(0.0, 0.0, 0.0, 0.0);
+	vec4 dst = vec4(.0,.0,.0,.0);
 	/// check if we are inside volume
 	bool inside_volume = inside_volume_bounds(sampling_pos);
 	if (!inside_volume) discard;
 	
 	#if TASK == 10
-		vec4 max_val = vec4(0.0, 0.0, 0.0, 0.0);
+		vec4 max_val = vec4(.0,.0,.0,.0);
 		// the traversal loop,
 		// termination when the sampling position is outside volume boundarys
 		// another termination condition for early ray termination is added
@@ -78,13 +91,15 @@ void main() {
 		// the traversal loop,
 		// termination when the sampling position is outside volume boundarys
 		// another termination condition for early ray termination is added
-		float valueAcc = 0;
+		vec4 valueAcc = vec4(.0,.0,.0,.0);
 		int totalSize = 0;
 		while (inside_volume) {
 			// get sample
 			float s = get_sample_data(sampling_pos);
+			// apply the transfer functions to retrieve color and opacity
+			vec4 color = texture(transfer_texture, vec2(s, s));
 			// dummy code
-			valueAcc += s;
+			valueAcc += color;
 			totalSize ++;
 			// dst = vec4(sampling_pos, 1.0);
 			// increment the ray sampling position
@@ -93,39 +108,64 @@ void main() {
 			inside_volume = inside_volume_bounds(sampling_pos);
 		}
 		valueAcc /= totalSize;
-		dst = vec4(valueAcc, valueAcc, valueAcc, 1.);
+		dst = valueAcc;
 	#endif
 	
 	#if TASK == 12 || TASK == 13
 		// the traversal loop,
 		// termination when the sampling position is outside volume boundarys
 		// another termination condition for early ray termination is added
-		float threshold = .1;
-		float valueFirst = 0;
+		dst = vec4(.0,.0,.0,.0);
+		float threshold  = .3;
 		while (inside_volume) {
 			// get sample
 			float s = get_sample_data(sampling_pos);
-			// dummy code
-			// dst = vec4(light_diffuse_color, 1.0);
+			vec4 surfaceColor = texture(transfer_texture, vec2(s, s));
+			// check for threshold
 			if (s > threshold) {
-				inside_volume = false; // to stop the loop
-				valueFirst    = .5;
-			}
-			// increment the ray sampling position
-			sampling_pos += ray_increment;
-			#if TASK == 13 // Binary Search
-				IMPLEMENT;
-			#endif
-			#if ENABLE_LIGHTNING == 1 // Add Shading
-				IMPLEMENTLIGHT;
-				#if ENABLE_SHADOWING == 1 // Add Shadows
-					IMPLEMENTSHADOW;
+				// to stop the loop
+				inside_volume = false;
+				dst = surfaceColor;
+				// Binary Search
+				#if TASK == 13
+					float step = 1;
+					bool running = true;
+					while (running) {
+						float value = get_sample_data(sampling_pos + step * ray_increment);
+						step *= value > threshold? -.5: .5;
+						if (step <= iso_value) running = false;
+					}
+					sampling_pos += step * ray_increment;
 				#endif
-			#endif
-			// update the loop termination condition
-			inside_volume = inside_volume_bounds(sampling_pos);
+				#if ENABLE_LIGHTNING == 1 // Add Shading
+					// find gradient and normal
+					vec3 gradient = get_gradient(sampling_pos);
+					vec3 normal = normalize(gradient * -1);
+					// dst = vec4(normal/2 + 0.5, 1.0);
+					// http://www.tomdalling.com/blog/modern-opengl/07-more-lighting-ambient-specular-attenuation-gamma/
+					// phong shading
+					vec3 surfaceToLight = normalize(light_position - sampling_pos);
+					// ambient
+					vec3 ambient = 0.05 * surfaceColor.rgb;
+					// diffuse
+					float diffuseCoefficient = max(0.0, dot(normal, surfaceToLight));
+					vec3 diffuse = diffuseCoefficient * surfaceColor.rgb;
+					// linear color
+					vec3 linearColor = ambient + diffuse;
+					vec3 gamma = vec3(1.0 / 2.2);
+					dst = vec4(pow(linearColor, gamma), surfaceColor.a);
+					// Add Shadows
+					#if ENABLE_SHADOWING == 1
+						IMPLEMENTSHADOW;
+					#endif
+				#endif
+			} else {
+				// increment the ray sampling position
+				sampling_pos += ray_increment;
+				// update the loop termination condition
+				inside_volume = inside_volume_bounds(sampling_pos);
+			}
 		}
-		dst = vec4(valueFirst, valueFirst, valueFirst, 1.);
 	#endif 
 	
 	#if TASK == 31
