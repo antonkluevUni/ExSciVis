@@ -6,23 +6,27 @@ case "$1" in
 		cd build
 		cmake ../
 		make
+		cd ..
 	;;
 	"build")
 		cd build
 		make
+		cd ..
 	;;
 	"start")
 		cd build/build/Release/
 		./MyVolumeRaycaster
+		cd .. && cd .. && cd ..
 	;;
 	"rs")
 		cd build
 		make
 		cd build/Release/
 		./MyVolumeRaycaster
+		cd .. && cd .. && cd ..
 	;;
 	*)
 		echo "You have failed to specify what to do correctly."
-	exit 1
+		exit 1
 	;;
 esac
