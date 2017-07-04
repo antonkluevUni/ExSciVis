@@ -116,26 +116,25 @@ void main() {
 		// termination when the sampling position is outside volume boundarys
 		// another termination condition for early ray termination is added
 		dst = vec4(.0,.0,.0,.0);
-		float threshold  = .3;
 		while (inside_volume) {
 			// get sample
 			float s = get_sample_data(sampling_pos);
 			vec4 surfaceColor = texture(transfer_texture, vec2(s, s));
 			// check for threshold
-			if (s > threshold) {
+			if (s > iso_value) {
 				// to stop the loop
 				inside_volume = false;
 				dst = surfaceColor;
 				// Binary Search
 				#if TASK == 13
-					float step = 1;
-					bool running = true;
-					while (running) {
-						float value = get_sample_data(sampling_pos + step * ray_increment);
-						step *= value > threshold? -.5: .5;
-						if (step <= iso_value) running = false;
+					float step1 = 1;
+					int times = 0;
+					while (times < 10) {
+						float value = get_sample_data(sampling_pos + step1 * ray_increment);
+						step1 *= value > iso_value? -.5: .5;
+						times ++;
 					}
-					sampling_pos += step * ray_increment;
+					sampling_pos += step1 * ray_increment;
 				#endif
 				#if ENABLE_LIGHTNING == 1 // Add Shading
 					// find gradient and normal
@@ -156,7 +155,15 @@ void main() {
 					dst = vec4(pow(linearColor, gamma), surfaceColor.a);
 					// Add Shadows
 					#if ENABLE_SHADOWING == 1
-						IMPLEMENTSHADOW;
+						bool run  = true;
+						vec3 ray  = sampling_pos;
+						vec3 step2 = surfaceToLight * length(ray_increment);
+						while (run) {
+							ray += step2;
+							bool hit = get_sample_data(ray) > iso_value;
+							run = !(hit || !inside_volume_bounds(ray));
+							if (hit) dst = vec4(ambient, surfaceColor.a);
+						}
 					#endif
 				#endif
 			} else {
