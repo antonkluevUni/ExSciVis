@@ -53,6 +53,42 @@ vec3 get_gradient (vec3 sampling_pos) {
 	);
 }
 
+vec4 phong_shading (vec4 surfaceColor, vec3 sampling_pos) {
+	// find gradient and normal
+	vec3 gradient = get_gradient(sampling_pos);
+	vec3 normal = normalize(gradient * -1);
+	// dst = vec4(normal/2 + 0.5, 1.0);
+	// http://www.tomdalling.com/blog/modern-opengl/07-more-lighting-ambient-specular-attenuation-gamma/
+	// phong shading
+	vec3 surfaceToLight = normalize(light_position - sampling_pos);
+	// ambient
+	vec3 ambient = 0.05 * surfaceColor.rgb;
+	// diffuse
+	float diffuseCoefficient = max(0.0, dot(normal, surfaceToLight));
+	vec3 diffuse = diffuseCoefficient * surfaceColor.rgb;
+	// linear color
+	vec3 linearColor = ambient + diffuse;
+	vec3 gamma = vec3(1.0 / 2.2);
+	return vec4(pow(linearColor, gamma), surfaceColor.a);
+}
+
+vec4 shadowing (vec4 surfaceColor, vec3 sampling_pos) {
+	vec3 surfaceToLight = normalize(light_position - sampling_pos);
+	vec3 ambient = 0.05 * surfaceColor.rgb;
+	vec3 step2 = surfaceToLight * sampling_distance;
+	bool run  = true;
+	vec3 ray  = sampling_pos;
+	while (run) {
+		ray += step2;
+		bool hit = get_sample_data(ray) > iso_value;
+		run = !(hit || !inside_volume_bounds(ray));
+		if (hit) return vec4(ambient, surfaceColor.a);
+	}
+	return surfaceColor;
+}
+
+
+
 void main() {
 	/// One step trough the volume
 	vec3 ray_increment = normalize(ray_entry_position - camera_location) * sampling_distance;
@@ -137,33 +173,10 @@ void main() {
 					sampling_pos += step1 * ray_increment;
 				#endif
 				#if ENABLE_LIGHTNING == 1 // Add Shading
-					// find gradient and normal
-					vec3 gradient = get_gradient(sampling_pos);
-					vec3 normal = normalize(gradient * -1);
-					// dst = vec4(normal/2 + 0.5, 1.0);
-					// http://www.tomdalling.com/blog/modern-opengl/07-more-lighting-ambient-specular-attenuation-gamma/
-					// phong shading
-					vec3 surfaceToLight = normalize(light_position - sampling_pos);
-					// ambient
-					vec3 ambient = 0.05 * surfaceColor.rgb;
-					// diffuse
-					float diffuseCoefficient = max(0.0, dot(normal, surfaceToLight));
-					vec3 diffuse = diffuseCoefficient * surfaceColor.rgb;
-					// linear color
-					vec3 linearColor = ambient + diffuse;
-					vec3 gamma = vec3(1.0 / 2.2);
-					dst = vec4(pow(linearColor, gamma), surfaceColor.a);
+					dst = phong_shading(surfaceColor, sampling_pos);
 					// Add Shadows
 					#if ENABLE_SHADOWING == 1
-						bool run  = true;
-						vec3 ray  = sampling_pos;
-						vec3 step2 = surfaceToLight * length(ray_increment);
-						while (run) {
-							ray += step2;
-							bool hit = get_sample_data(ray) > iso_value;
-							run = !(hit || !inside_volume_bounds(ray));
-							if (hit) dst = vec4(ambient, surfaceColor.a);
-						}
+						dst = shadowing(dst, sampling_pos);
 					#endif
 				#endif
 			} else {
@@ -179,23 +192,40 @@ void main() {
 		// the traversal loop,
 		// termination when the sampling position is outside volume boundarys
 		// another termination condition for early ray termination is added
+		float adapted_sampling_distance = sampling_distance;
+		ray_increment = normalize(ray_entry_position - camera_location) * adapted_sampling_distance;
+		vec4 acc  = vec4(0,0,0,0);
+		bool first = false;
+		// loop
 		while (inside_volume) {
+			// get value
+			float s1 = get_sample_data(sampling_pos);
+			vec4 c = texture(transfer_texture, vec2(s1, s1));
 			// get sample
 			#if ENABLE_OPACITY_CORRECTION == 1 // Opacity Correction
-				IMPLEMENT;
+				c.a = 1 - pow(1 - c.a, adapted_sampling_distance / sampling_distance);
 			#else
-				float s = get_sample_data(sampling_pos);
+				// float s = get_sample_data(sampling_pos);
 			#endif
-			// dummy code
-			dst = vec4(light_specular_color, 1.0);
+			// front to back
+			float o = (1 - acc.a) * c.a * .5;
+			acc.a   += o;
+			acc.rgb += o * c.rgb;
+			if (!first && acc.a > 0.1){
+				first = true;
+				#if ENABLE_LIGHTNING == 1 // Add Shading
+					acc = phong_shading(acc, sampling_pos);
+				#endif
+				#if ENABLE_SHADOWING == 1 // Add Shading
+					acc = shadowing(acc, sampling_pos);
+				#endif
+			}
 			// increment the ray sampling position
 			sampling_pos += ray_increment;
-			#if ENABLE_LIGHTNING == 1 // Add Shading
-				IMPLEMENT;
-			#endif
 			// update the loop termination condition
-			inside_volume = inside_volume_bounds(sampling_pos);
+			inside_volume = acc.a >= 1? false: inside_volume_bounds(sampling_pos);
 		}
+		dst = acc;
 	#endif 
 	// return the calculated color value
 	FragColor = dst;
