@@ -53,6 +53,37 @@ vec3 get_gradient (vec3 sampling_pos) {
 	);
 }
 
+vec4 get_pre_classification (vec3 sampling_pos) {
+	// transform from texture space to array space
+	// ie: (0.3, 0.5, 1.0) -> (76.5 127.5 255.0)
+	vec3 arraySpace = sampling_pos * vec3(volume_dimensions);
+	float lX = floor(arraySpace.x); float uX = ceil(arraySpace.x);
+	float lY = floor(arraySpace.y); float uY = ceil(arraySpace.y);
+	float lZ = floor(arraySpace.z); float uZ = ceil(arraySpace.z);
+	// texture
+	vec3 objToTex = vec3(1.0) / max_bounds;
+	float t0 = texture(volume_texture, vec3(lX, uY, lZ) / vec3(volume_dimensions) * objToTex).r;
+	float t1 = texture(volume_texture, vec3(uX, uY, lZ) / vec3(volume_dimensions) * objToTex).r;
+	float t2 = texture(volume_texture, vec3(uX, uY, uZ) / vec3(volume_dimensions) * objToTex).r;
+	float t3 = texture(volume_texture, vec3(lX, uY, uZ) / vec3(volume_dimensions) * objToTex).r;
+	float t4 = texture(volume_texture, vec3(lX, lY, lZ) / vec3(volume_dimensions) * objToTex).r;
+	float t5 = texture(volume_texture, vec3(uX, lY, lZ) / vec3(volume_dimensions) * objToTex).r;
+	float t6 = texture(volume_texture, vec3(uX, lY, uZ) / vec3(volume_dimensions) * objToTex).r;
+	float t7 = texture(volume_texture, vec3(lX, lY, uZ) / vec3(volume_dimensions) * objToTex).r;
+	// uvw
+	float u = (arraySpace.x - lX) / (uX - lX);
+	float v = (arraySpace.y - lY) / (uY - lY);
+	float w = (arraySpace.z - lZ) / (uZ - lZ);
+	// texture
+	vec4 t8  = (1-u) * texture(transfer_texture, vec2(t4, t4)) + u * texture(transfer_texture, vec2(t5, t5));
+	vec4 t9  = (1-u) * texture(transfer_texture, vec2(t0, t0)) + u * texture(transfer_texture, vec2(t1, t1));
+	vec4 t10 = (1-u) * texture(transfer_texture, vec2(t7, t7)) + u * texture(transfer_texture, vec2(t6, t6));
+	vec4 t11 = (1-u) * texture(transfer_texture, vec2(t3, t3)) + u * texture(transfer_texture, vec2(t2, t2));
+	vec4 t12 = (1-w) * t8 + w * t10;
+	vec4 t13 = (1-w) * t9 + w * t11;
+	return (1-v) * t12 + v * t13;
+}
+
 vec4 phong_shading (vec4 surfaceColor, vec3 sampling_pos) {
 	// find gradient and normal
 	vec3 gradient = get_gradient(sampling_pos);
@@ -189,18 +220,39 @@ void main() {
 	#endif 
 	
 	#if TASK == 31
+		bool backToFront = true;
+		bool preClassification = false;
 		// the traversal loop,
 		// termination when the sampling position is outside volume boundarys
 		// another termination condition for early ray termination is added
 		float adapted_sampling_distance = sampling_distance;
 		ray_increment = normalize(ray_entry_position - camera_location) * adapted_sampling_distance;
-		vec4 acc  = vec4(0,0,0,0);
-		bool first = false;
+		vec4 acc      = vec4(0,0,0,0);
+		int  first    = -1;
+		int  iterator = 0;
+		if (backToFront) {
+			while (inside_volume) {
+				float s1 = get_sample_data(sampling_pos);
+				vec4 c = texture(transfer_texture, vec2(s1, s1));
+				if (c.a > .1 && first == -1) first = iterator;
+				iterator ++;
+				// increment the ray sampling position
+				sampling_pos += ray_increment;
+				// update the loop termination condition
+				inside_volume = inside_volume_bounds(sampling_pos);
+			}
+			inside_volume = true;
+		}
 		// loop
 		while (inside_volume) {
+			vec4 c = vec4(0,0,0,0);
 			// get value
-			float s1 = get_sample_data(sampling_pos);
-			vec4 c = texture(transfer_texture, vec2(s1, s1));
+			if (preClassification) 
+				c = get_pre_classification(sampling_pos);
+			else {
+				float s1 = get_sample_data(sampling_pos);
+				c = texture(transfer_texture, vec2(s1, s1));
+			}
 			// get sample
 			#if ENABLE_OPACITY_CORRECTION == 1 // Opacity Correction
 				c.a = 1 - pow(1 - c.a, adapted_sampling_distance / sampling_distance);
@@ -211,17 +263,29 @@ void main() {
 			float o = (1 - acc.a) * c.a * .5;
 			acc.a   += o;
 			acc.rgb += o * c.rgb;
-			if (!first && acc.a > 0.1){
-				first = true;
-				#if ENABLE_LIGHTNING == 1 // Add Shading
-					acc = phong_shading(acc, sampling_pos);
-				#endif
-				#if ENABLE_SHADOWING == 1 // Add Shading
-					acc = shadowing(acc, sampling_pos);
-				#endif
+			if (backToFront) {
+				if (first == iterator) {
+					#if ENABLE_LIGHTNING == 1 // Add Shading
+						acc = phong_shading(acc, sampling_pos);
+					#endif
+					#if ENABLE_SHADOWING == 1 // Add Shading
+						acc = shadowing(acc, sampling_pos);
+					#endif
+				}
+				iterator --;
+			} else {
+				if (first == -1 && acc.a > 0.1) {
+					first = 1;
+					#if ENABLE_LIGHTNING == 1 // Add Shading
+						acc = phong_shading(acc, sampling_pos);
+					#endif
+					#if ENABLE_SHADOWING == 1 // Add Shading
+						acc = shadowing(acc, sampling_pos);
+					#endif
+				}
 			}
 			// increment the ray sampling position
-			sampling_pos += ray_increment;
+			sampling_pos = sampling_pos + ray_increment * (backToFront? -1: 1);
 			// update the loop termination condition
 			inside_volume = acc.a >= 1? false: inside_volume_bounds(sampling_pos);
 		}
